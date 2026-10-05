@@ -42,10 +42,12 @@ public class Prices {
     private final ObjectMapper json;
     private final Clock clock;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+    private final Onward onward;
     private volatile Map<String, Instrument> instruments = Map.of();
     private volatile Snapshot snapshot;
 
-    public Prices(ExchangeProperties props, ObjectMapper json, Clock clock) {
+    public Prices(ExchangeProperties props, ObjectMapper json, Clock clock, Onward onward) {
+        this.onward = onward;
         this.props = props;
         this.json = json;
         this.clock = clock;
@@ -104,7 +106,8 @@ public class Prices {
     }
 
     private JsonNode get(String path) throws Exception {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(props.marketdataUrl() + path)).timeout(Duration.ofSeconds(3)).GET().build();
+        HttpRequest req = onward.headers(HttpRequest.newBuilder(URI.create(props.marketdataUrl() + path))
+                .timeout(Duration.ofSeconds(3)).GET()).build();
         HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
         if (res.statusCode() != 200) {
             throw new IllegalStateException("market data answered " + res.statusCode() + " for " + path);
