@@ -12,7 +12,8 @@ public record ExchangeProperties(
         Duration staleAfter,
         int bandPercent,
         Duration deliveryCheck,
-        List<Member> members) {
+        List<Member> members,
+        String clearingKey) {
 
     /** A broker allowed to trade: how it signs in, and where and how its callbacks go. */
     public record Member(String name, String key, String callbackUrl, String webhookSecret) {}

@@ -14,6 +14,10 @@ Sprout Bank. Brokers (members) send it orders; it executes them against the simu
 Prices are polled from market data rather than read from the NATS tick stream: the exchange needs the
 latest price, not every tick, and this way it knows when it can't trust what it has.
 
+**Clients and the trade tape.** Orders carry the member's client code (without one, the trade is the
+member's own: `PRO`), execution reports name their session, and the clearing corporation reads each
+session's trades from `/clearing/v1/trades` to settle them T+1.
+
 ## Part of Sprout
 
 [Sprout](https://sainayakk.github.io/sprout-platform/) is a simulated brokerage built from scratch as
