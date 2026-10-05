@@ -321,6 +321,11 @@ class ExchangeApiTest {
         assertThat(rest.get(0).path("quantity").asInt()).isEqualTo(1);
         mvc.perform(get("/clearing/v1/trades").param("sessionDate", "2026-10-06").header("X-Clearing-Key", KEY))
                 .andExpect(status().isUnauthorized());
+        JsonNode mine = body(mvc.perform(get("/member/v1/trades").param("sessionDate", "2026-10-06").header("X-Member-Key", KEY))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("trades");
+        assertThat(mine.size()).isEqualTo(3);
+        assertThat(mine.get(0).path("clientOrderId").asText()).isEqualTo(a.get("clientOrderId"));
+        mvc.perform(get("/member/v1/trades").param("sessionDate", "2026-10-06").header("X-Member-Key", "nope")).andExpect(status().isUnauthorized());
         assertThat(delivered()).allMatch(e -> e.path("sessionDate").asText().equals("2026-10-06"));
         Map<String, Object> house = order("BUY", "MARKET", 1);
         house.remove("clientCode");

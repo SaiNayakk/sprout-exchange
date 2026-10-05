@@ -52,6 +52,10 @@ public class Exchange {
 
     public record Placed(Order order, boolean created) {}
 
+    /** One of a member's own executions, with the order it filled. */
+    public record MemberTrade(UUID id, String clientOrderId, String clientCode, String symbol, Side side, int quantity, long pricePaise,
+                              LocalDate sessionDate, Instant executedAt) {}
+
     /** One execution, as the clearing corporation reads it. */
     public record Trade(UUID id, String member, String clientCode, String symbol, Side side, int quantity, long pricePaise,
                         LocalDate sessionDate, Instant executedAt) {}
@@ -293,6 +297,20 @@ public class Exchange {
                 .query((rs, n) -> new Trade(rs.getObject("id", UUID.class), rs.getString("member"), rs.getString("client_code"),
                         rs.getString("symbol"), Side.valueOf(rs.getString("side")), rs.getInt("quantity"), rs.getLong("price_paise"),
                         rs.getObject("session_date", LocalDate.class), rs.getTimestamp("executed_at").toInstant()))
+                .list();
+    }
+
+    /** A member's own trades in a session, in execution order, from just after {@code after}, at most {@code limit}. */
+    public List<MemberTrade> memberTrades(Member member, LocalDate session, UUID after, int limit) {
+        return db.sql("""
+                        SELECT t.id, o.client_order_id, t.client_code, t.symbol, t.side, t.quantity, t.price_paise, t.session_date, t.executed_at
+                        FROM trades t JOIN orders o ON o.id = t.order_id
+                        WHERE t.member = ? AND t.session_date = ?
+                          AND (CAST(? AS uuid) IS NULL OR (t.executed_at, t.id) > (SELECT executed_at, id FROM trades WHERE id = ?))
+                        ORDER BY t.executed_at, t.id LIMIT ?""")
+                .params(member.name(), session, after, after, limit)
+                .query((rs, n) -> new MemberTrade(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getString(4),
+                        Side.valueOf(rs.getString(5)), rs.getInt(6), rs.getLong(7), rs.getObject(8, LocalDate.class), rs.getTimestamp(9).toInstant()))
                 .list();
     }
 
