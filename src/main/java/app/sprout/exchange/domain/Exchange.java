@@ -43,14 +43,18 @@ public class Exchange {
 
     public enum Type { MARKET, LIMIT }
 
-    public record NewOrder(String clientOrderId, String symbol, Side side, Type type, int quantity, Long limitPaise,
+    public record NewOrder(String clientOrderId, String clientCode, String symbol, Side side, Type type, int quantity, Long limitPaise,
                            Long protectionPaise) {}
 
-    public record Order(UUID id, String member, String clientOrderId, String symbol, Side side, Type type, int quantity,
+    public record Order(UUID id, String member, String clientOrderId, String clientCode, String symbol, Side side, Type type, int quantity,
                         Long limitPaise, Long protectionPaise, String status, int filledQuantity, Long pricePaise,
                         UUID tradeId, String reason, LocalDate sessionDate, Instant createdAt, Instant updatedAt) {}
 
     public record Placed(Order order, boolean created) {}
+
+    /** One execution, as the clearing corporation reads it. */
+    public record Trade(UUID id, String member, String clientCode, String symbol, Side side, int quantity, long pricePaise,
+                        LocalDate sessionDate, Instant executedAt) {}
 
     private final JdbcClient db;
     private final TransactionTemplate tx;
@@ -98,10 +102,10 @@ public class Exchange {
                 UUID id = UUID.randomUUID();
                 Instant now = clock.instant();
                 db.sql("""
-                                INSERT INTO orders (id, member, client_order_id, request_hash, symbol, side, type, quantity, limit_paise,
-                                                    protection_paise, status, session_date, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""")
-                        .params(id, member.name(), o.clientOrderId(), hash, o.symbol(), o.side().name(), o.type().name(), o.quantity(),
+                                INSERT INTO orders (id, member, client_order_id, client_code, request_hash, symbol, side, type, quantity,
+                                                    limit_paise, protection_paise, status, session_date, created_at, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?, ?)""")
+                        .params(id, member.name(), o.clientOrderId(), o.clientCode(), hash, o.symbol(), o.side().name(), o.type().name(), o.quantity(),
                                 o.limitPaise(), o.protectionPaise(), market.sessionDate(), ts(now), ts(now))
                         .update();
                 Order order = lock(id);
@@ -125,6 +129,9 @@ public class Exchange {
     private void validate(NewOrder o) {
         if (o.clientOrderId() == null || o.clientOrderId().isBlank() || o.clientOrderId().length() > 64) {
             throw new ApiException(ErrorCode.VALIDATION_FAILED, "clientOrderId is 1 to 64 characters.");
+        }
+        if (o.clientCode() != null && !o.clientCode().matches("[A-Za-z0-9-]{1,64}")) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "clientCode (the member's code for its client) is 1 to 64 letters, digits or dashes.");
         }
         if (o.symbol() == null || o.side() == null || o.type() == null) {
             throw new ApiException(ErrorCode.VALIDATION_FAILED, "symbol, side and type are required.");
@@ -224,8 +231,11 @@ public class Exchange {
     private void fill(Order o, long price) {
         UUID trade = UUID.randomUUID();
         Instant now = clock.instant();
-        db.sql("INSERT INTO trades (id, order_id, member, symbol, side, quantity, price_paise, executed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .params(trade, o.id(), o.member(), o.symbol(), o.side().name(), o.quantity(), price, ts(now)).update();
+        db.sql("""
+                        INSERT INTO trades (id, order_id, member, client_code, symbol, side, quantity, price_paise, session_date, executed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")
+                .params(trade, o.id(), o.member(), o.clientCode(), o.symbol(), o.side().name(), o.quantity(), price, o.sessionDate(), ts(now))
+                .update();
         db.sql("UPDATE orders SET status = 'FILLED', filled_quantity = quantity, price_paise = ?, trade_id = ?, updated_at = ? WHERE id = ?")
                 .params(price, trade, ts(now), o.id()).update();
         tell(o, "ORDER_FILLED", price, trade, null, now);
@@ -252,6 +262,7 @@ public class Exchange {
         event.put("symbol", o.symbol());
         event.put("side", o.side().name());
         event.put("quantity", o.quantity());
+        event.put("sessionDate", o.sessionDate().toString());
         if (price != null) {
             event.put("price", Money.rupees(price));
             event.put("tradeId", trade.toString());
@@ -267,6 +278,22 @@ public class Exchange {
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    // ── the trade tape, for clearing ─────────────────────────────────────────
+
+    /** A session's trades in execution order, from just after {@code after} (a trade id), at most {@code limit}. */
+    public List<Trade> trades(LocalDate session, UUID after, int limit) {
+        return db.sql("""
+                        SELECT id, member, client_code, symbol, side, quantity, price_paise, session_date, executed_at FROM trades
+                        WHERE session_date = ?
+                          AND (CAST(? AS uuid) IS NULL OR (executed_at, id) > (SELECT executed_at, id FROM trades WHERE id = ?))
+                        ORDER BY executed_at, id LIMIT ?""")
+                .params(session, after, after, limit)
+                .query((rs, n) -> new Trade(rs.getObject("id", UUID.class), rs.getString("member"), rs.getString("client_code"),
+                        rs.getString("symbol"), Side.valueOf(rs.getString("side")), rs.getInt("quantity"), rs.getLong("price_paise"),
+                        rs.getObject("session_date", LocalDate.class), rs.getTimestamp("executed_at").toInstant()))
+                .list();
     }
 
     // ── cancelling and reading ───────────────────────────────────────────────
@@ -305,12 +332,12 @@ public class Exchange {
     }
 
     private static final String ORDER_SQL = """
-            SELECT id, member, client_order_id, symbol, side, type, quantity, limit_paise, protection_paise, status, filled_quantity,
+            SELECT id, member, client_order_id, client_code, symbol, side, type, quantity, limit_paise, protection_paise, status, filled_quantity,
                    price_paise, trade_id, reason, session_date, created_at, updated_at FROM orders""";
 
     private static Order row(ResultSet rs, int n) throws SQLException {
         return new Order(rs.getObject("id", UUID.class), rs.getString("member"), rs.getString("client_order_id"),
-                rs.getString("symbol"), Side.valueOf(rs.getString("side")), Type.valueOf(rs.getString("type")),
+                rs.getString("client_code"), rs.getString("symbol"), Side.valueOf(rs.getString("side")), Type.valueOf(rs.getString("type")),
                 rs.getInt("quantity"), rs.getObject("limit_paise", Long.class), rs.getObject("protection_paise", Long.class),
                 rs.getString("status"), rs.getInt("filled_quantity"), rs.getObject("price_paise", Long.class),
                 rs.getObject("trade_id", UUID.class), rs.getString("reason"), rs.getObject("session_date", LocalDate.class),
@@ -318,7 +345,7 @@ public class Exchange {
     }
 
     static String hash(NewOrder o) {
-        String canonical = String.join("|", o.symbol(), o.side().name(), o.type().name(), String.valueOf(o.quantity()),
+        String canonical = String.join("|", o.clientCode(), o.symbol(), o.side().name(), o.type().name(), String.valueOf(o.quantity()),
                 String.valueOf(o.limitPaise()), String.valueOf(o.protectionPaise()));
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8)));

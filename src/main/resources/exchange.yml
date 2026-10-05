@@ -70,6 +70,8 @@ sprout:
     stale-after: 10s               # prices older than this: stop matching, refuse new orders
     band-percent: 20               # limit prices within this much of the previous close
     delivery-check: 1s
+    # The clearing corporation reads each day's trades with this key.
+    clearing-key: ${EXCHANGE_CLEARING_KEY:dev-only-exchange-clearing-key}
     # Brokers that may trade here. Each callback is signed with the member's webhook secret.
     members:
       - name: sprout

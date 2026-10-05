@@ -138,6 +138,7 @@ class ExchangeApiTest {
     static Map<String, Object> order(String side, String type, int qty, String... prices) {
         Map<String, Object> o = new java.util.LinkedHashMap<>();
         o.put("clientOrderId", UUID.randomUUID().toString());
+        o.put("clientCode", "client-1");
         o.put("symbol", "HARBOR");
         o.put("side", side);
         o.put("type", type);
@@ -291,6 +292,42 @@ class ExchangeApiTest {
             t.join();
         }
         assertThat(delivered()).hasSize(1);
+    }
+
+    // ── the trade tape ───────────────────────────────────────────────────────
+
+    @Test
+    void clearingReadsTheSessionsTradesPageByPageWithTheirClients() throws Exception {
+        SESSION.set("2026-10-06");   // a session of its own, so other tests' trades don't count
+        tick();
+        Map<String, Object> a = order("BUY", "MARKET", 4);
+        a.put("clientCode", "client-a");
+        Map<String, Object> b = order("SELL", "MARKET", 2);
+        b.put("clientCode", "client-b");
+        Map<String, Object> c = order("BUY", "MARKET", 1);
+        c.put("clientCode", "client-a");
+        for (Map<String, Object> o : List.of(a, b, c)) {
+            clock.advance(Duration.ofSeconds(1));   // trades a second apart, as they would be
+            place(o).andExpect(status().isCreated());
+        }
+        JsonNode first = body(mvc.perform(get("/clearing/v1/trades").param("sessionDate", "2026-10-06").param("limit", "2")
+                .header("X-Clearing-Key", "dev-only-exchange-clearing-key")).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("trades");
+        assertThat(first.size()).isEqualTo(2);
+        assertThat(first.get(0).path("clientCode").asText()).isEqualTo("client-a");
+        assertThat(first.get(1).path("side").asText()).isEqualTo("SELL");
+        JsonNode rest = body(mvc.perform(get("/clearing/v1/trades").param("sessionDate", "2026-10-06").param("limit", "2")
+                .param("after", first.get(1).path("tradeId").asText()).header("X-Clearing-Key", "dev-only-exchange-clearing-key"))).path("trades");
+        assertThat(rest.size()).isEqualTo(1);
+        assertThat(rest.get(0).path("quantity").asInt()).isEqualTo(1);
+        mvc.perform(get("/clearing/v1/trades").param("sessionDate", "2026-10-06").header("X-Clearing-Key", KEY))
+                .andExpect(status().isUnauthorized());
+        assertThat(delivered()).allMatch(e -> e.path("sessionDate").asText().equals("2026-10-06"));
+        Map<String, Object> house = order("BUY", "MARKET", 1);
+        house.remove("clientCode");
+        place(house).andExpect(status().isCreated()).andExpect(jsonPath("$.clientCode").value("PRO"));   // the member's own trade
+        Map<String, Object> bad = order("BUY", "MARKET", 1);
+        bad.put("clientCode", "not valid!");
+        place(bad).andExpect(status().isBadRequest());
     }
 
     // ── telling the member ───────────────────────────────────────────────────
