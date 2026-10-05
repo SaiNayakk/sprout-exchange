@@ -70,6 +70,31 @@ public class ExchangeController {
         return dto(exchange.cancel(member(key), clientOrderId));
     }
 
+    /** A member's own trades in a session, a page at a time, to reconcile its books with the exchange. */
+    @GetMapping("/member/v1/trades")
+    public Map<String, Object> memberTrades(@RequestHeader(value = "X-Member-Key", required = false) String key,
+                                            @RequestParam LocalDate sessionDate, @RequestParam(required = false) UUID after,
+                                            @RequestParam(required = false) Integer limit) {
+        Member member = member(key);
+        int n = limit == null ? 500 : limit;
+        if (n < 1 || n > 1000) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "limit is between 1 and 1000.");
+        }
+        return Map.of("trades", exchange.memberTrades(member, sessionDate, after, n).stream().map(t -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("tradeId", t.id().toString());
+            m.put("clientOrderId", t.clientOrderId());
+            m.put("clientCode", t.clientCode());
+            m.put("symbol", t.symbol());
+            m.put("side", t.side().name());
+            m.put("quantity", t.quantity());
+            m.put("price", Money.rupees(t.pricePaise()));
+            m.put("sessionDate", t.sessionDate().toString());
+            m.put("executedAt", t.executedAt().toString());
+            return m;
+        }).toList());
+    }
+
     /** The day's trades for the clearing corporation, a page at a time (pass the last trade id as {@code after}). */
     @GetMapping("/clearing/v1/trades")
     public Map<String, Object> trades(@RequestHeader(value = "X-Clearing-Key", required = false) String key,
