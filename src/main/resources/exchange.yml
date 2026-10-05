@@ -1,0 +1,78 @@
+# Configuration for the exchange service. Named exchange.yml (not application.yml) so several services can
+# share one JVM host without their settings colliding.
+spring:
+  application:
+    name: sprout-exchange
+  datasource:
+    url: ${EXCHANGE_DB_URL:jdbc:postgresql://localhost:5432/sprout?currentSchema=exchange}
+    username: ${EXCHANGE_DB_USER:sprout}
+    password: ${EXCHANGE_DB_PASSWORD:sprout}
+    hikari:
+      maximum-pool-size: 5
+      pool-name: exchange
+      connection-timeout: 2000   # fail fast when the database is gone (CHAOS-01's lesson)
+      validation-timeout: 1000
+  flyway:
+    locations: classpath:db/exchange
+    schemas: exchange
+    default-schema: exchange
+  jackson:
+    default-property-inclusion: non_null   # absent, never null: the contracts say so
+    deserialization:
+      fail-on-unknown-properties: true
+  jmx:
+    enabled: false
+
+server:
+  port: ${EXCHANGE_PORT:8108}
+  address: ${EXCHANGE_BIND:127.0.0.1}
+  tomcat:
+    threads:
+      max: 16
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTEL_ENABLED:false}
+        url: ${OTEL_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+    tracing:
+      endpoint: ${OTEL_TRACES_URL:http://localhost:4318/v1/traces}
+  tracing:
+    enabled: ${OTEL_ENABLED:false}
+    sampling:
+      probability: 1.0
+  metrics:
+    tags:
+      service: sprout-exchange
+
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:}
+  pattern:
+    correlation: "[%X{requestId:-}] "
+
+sprout:
+  exchange:
+    # Where prices, trading hours and instruments come from.
+    marketdata-url: ${EXCHANGE_MARKETDATA_URL:http://127.0.0.1:8103}
+    price-poll: ${EXCHANGE_PRICE_POLL:500ms}
+    stale-after: 10s               # prices older than this: stop matching, refuse new orders
+    band-percent: 20               # limit prices within this much of the previous close
+    delivery-check: 1s
+    # Brokers that may trade here. Each callback is signed with the member's webhook secret.
+    members:
+      - name: sprout
+        key: ${EXCHANGE_SPROUT_MEMBER_KEY:dev-only-member-key}
+        callback-url: ${EXCHANGE_SPROUT_CALLBACK_URL:http://127.0.0.1:8109/internal/v1/exchange-events}
+        webhook-secret: ${EXCHANGE_SPROUT_WEBHOOK_SECRET:dev-only-exchange-webhook-secret}
